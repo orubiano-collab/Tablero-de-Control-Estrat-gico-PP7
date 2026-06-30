@@ -508,6 +508,10 @@ function getUrgKey(str) {
   return 'BAJA';
 }
 function lvl(v)  { return lvlNorm(v); }
+function recordScore(r) {
+  // Suma el nivel (0-3) de cada manifestación del registro según M_FIELDS
+  return M_FIELDS.reduce((sum, f) => sum + lvl(r[f]), 0);
+}
 function avg(arr){ return arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
 function pct(n,t){ return t ? Math.round(n/t*100) : 0; }
 function fmtDate(d){ return d ? String(d).slice(0,10) : '—'; }
@@ -604,24 +608,24 @@ function computeMetrics(data) {
   if (!total) return null;
 
   const urgDist = {BAJA:0,MEDIA:0,ALTA:0,'CRÍTICA':0};
-  data.forEach(r => { urgDist[getUrgKey(r.URGENCIA_CALCULADA_AUTO||r.URGENCIA_INTERVENCION)]++; });
+  data.forEach(r => { urgDist[getUrgKey(r.urgencia)]++; });
 
-  const scores   = data.map(r => parseFloat(r.SCORE_MANIFESTACIONES_0_8)||0);
+  const scores   = data.map(r => recordScore(r));
   const avgScore = avg(scores);
   const mAvgs    = M_FIELDS.map(f => avg(data.map(r => lvl(r[f]))));
 
   const sectors = [...new Set(data.map(r => {
-    const b = r.BARRIO_SECTOR||'';
+    const b = r.barrio_sector||'';
     return b.includes('—') ? b.split('—')[1].trim() : b.trim();
   }).filter(Boolean))];
 
   // Tendencia mensual
   const byMonth = {};
   data.forEach(r => {
-    const m = String(r.FECHA_LEVANTAMIENTO||r.TIMESTAMP_REGISTRO||'').slice(0,7);
+    const m = String(r.fecha||r.timestamp_envio||'').slice(0,7);
     if (!m) return;
     if (!byMonth[m]) byMonth[m] = {BAJA:0,MEDIA:0,ALTA:0,'CRÍTICA':0};
-    byMonth[m][getUrgKey(r.URGENCIA_CALCULADA_AUTO||r.URGENCIA_INTERVENCION)]++;
+    byMonth[m][getUrgKey(r.urgencia)]++;
   });
 
   // ─── PUNTOS EN MAPA (parseCoord robusto) ───
@@ -629,8 +633,8 @@ function computeMetrics(data) {
   const mapPoints = [];
 
   data.forEach(r => {
-    const rawLat = r.LATITUD;
-    const rawLng = r.LONGITUD;
+    const rawLat = r.latitud;
+    const rawLng = r.longitud;
 
     // Si ambos campos están vacíos, omitir silenciosamente
     if (!rawLat && !rawLng) { geoFail++; return; }
@@ -640,7 +644,7 @@ function computeMetrics(data) {
 
     if (!isValidCoord(lat, lng)) {
       // Log para depuración
-      console.warn(`⚠ Coord inválida | ficha:${r.CODIGO_FICHA} | lat_raw:"${rawLat}"→${lat} | lng_raw:"${rawLng}"→${lng}`);
+      console.warn(`⚠ Coord inválida | ficha:${r.codigo_ficha} | lat_raw:"${rawLat}"→${lat} | lng_raw:"${rawLng}"→${lng}`);
       geoFail++;
       return;
     }
@@ -648,12 +652,12 @@ function computeMetrics(data) {
     geoOk++;
     mapPoints.push({
       lat, lng,
-      urgencia:   getUrgKey(r.URGENCIA_CALCULADA_AUTO||r.URGENCIA_INTERVENCION),
-      codigo:     r.CODIGO_FICHA||'—',
-      barrio:     r.BARRIO_SECTOR||'',
-      fecha:      r.FECHA_LEVANTAMIENTO||'',
-      score:      parseFloat(r.SCORE_MANIFESTACIONES_0_8)||0,
-      conclusion: trunc(r.CONCLUSION_GENERAL, 200)
+      urgencia:   getUrgKey(r.urgencia),
+      codigo:     r.codigo_ficha||'—',
+      barrio:     r.barrio_sector||'',
+      fecha:      r.fecha||'',
+      score:      recordScore(r),
+      conclusion: trunc(r.conclusion, 200)
     });
   });
 
@@ -661,11 +665,11 @@ function computeMetrics(data) {
   dbgUpdate({total, geo: geoOk, noGeo: geoFail});
 
   const alertas = data
-    .filter(r => ['CRÍTICA','ALTA'].includes(getUrgKey(r.URGENCIA_CALCULADA_AUTO||r.URGENCIA_INTERVENCION)))
+    .filter(r => ['CRÍTICA','ALTA'].includes(getUrgKey(r.urgencia)))
     .sort((a,b) => {
       const o = {'CRÍTICA':0,'ALTA':1};
-      return (o[getUrgKey(a.URGENCIA_CALCULADA_AUTO||a.URGENCIA_INTERVENCION)]||2) -
-             (o[getUrgKey(b.URGENCIA_CALCULADA_AUTO||b.URGENCIA_INTERVENCION)]||2);
+      return (o[getUrgKey(a.urgencia)]||2) -
+             (o[getUrgKey(b.urgencia)]||2);
     });
 
   return {total, urgDist, avgScore, mAvgs, sectors, byMonth, mapPoints, geoOk, geoFail, alertas,
@@ -878,18 +882,18 @@ function renderAlertas(m) {
     return;
   }
   tb.innerHTML = m.alertas.slice(0,25).map(r => {
-    const uk = getUrgKey(r.URGENCIA_CALCULADA_AUTO||r.URGENCIA_INTERVENCION);
-    const s  = parseFloat(r.SCORE_MANIFESTACIONES_0_8)||0;
+    const uk = getUrgKey(r.urgencia);
+    const s  = recordScore(r);
     return `<tr>
-      <td class="mono">${r.CODIGO_FICHA||'—'}</td>
-      <td>${fmtDate(r.FECHA_LEVANTAMIENTO)}</td>
-      <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;">${trunc(r.BARRIO_SECTOR,32)}</td>
+      <td class="mono">${r.codigo_ficha||'—'}</td>
+      <td>${fmtDate(r.fecha)}</td>
+      <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;">${trunc(r.barrio_sector,32)}</td>
       <td><div class="score-bar-wrap"><div class="score-bar"><div class="score-bar-fill" style="width:${(s/27*100).toFixed(0)}%"></div></div><span style="font-size:.78em;font-weight:700;min-width:26px;color:var(--ink)">${s}</span></div></td>
       <td style="color:${URG_COLOR[getUrgKey(r.m1_nivel)]||'var(--ink3)'};">${r.m1_nivel||'—'}</td>
       <td style="color:${URG_COLOR[getUrgKey(r.m2_nivel)]||'var(--ink3)'};">${r.m2_nivel||'—'}</td>
       <td style="color:${URG_COLOR[getUrgKey(r.m3_nivel)]||'var(--ink3)'};">${r.m3_nivel||'—'}</td>
       <td><span class="urg-pill ${URG_CLASS[uk]||'up-baja'}">${uk}</span></td>
-      <td style="max-width:200px;font-size:.75em;color:var(--ink3);">${trunc(r.ACCIONES_A_ACTIVAR,80)}</td>
+      <td style="max-width:200px;font-size:.75em;color:var(--ink3);">${trunc(r.acc,80)}</td>
     </tr>`;
   }).join('');
 }
